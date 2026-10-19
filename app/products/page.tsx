@@ -135,6 +135,14 @@ export default async function ProductsPage({
         {status === 'saved' && (
           <p style={{ color: '#54e3ac' }}>Produk berhasil disimpan!</p>
         )}
+{status === 'updated' && (
+  <p style={{ color: '#54e3ac' }}>Produk berhasil diperbarui!</p>
+)}
+
+{status === 'deleted' && (
+  <p style={{ color: '#54e3ac' }}>Produk berhasil dihapus!</p>
+)}
+
         {status === 'invalid' && (
           <p role="alert">Periksa kembali semua data produk.</p>
         )}
@@ -265,6 +273,21 @@ export default async function ProductsPage({
                 }}>
                   Profit: {rupiah(profit)} ({margin.toFixed(1)}%)
                 </h3>
+<Link
+  href={`/products/${p.id}/edit`}
+  style={{
+    display: 'inline-block',
+    marginTop: 12,
+    padding: '10px 16px',
+    background: '#174c66',
+    color: '#54e3ac',
+    borderRadius: 8,
+    textDecoration: 'none'
+  }}
+>
+  Edit / Hapus Produk
+</Link>
+
               </article>
             )
           })}
