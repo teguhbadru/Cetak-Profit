@@ -1,435 +1,296 @@
-
 import Link from 'next/link'
-import { notFound, redirect } from 'next/navigation'
-import { createClient } from '../../../../lib/supabase/server'
+import { redirect } from 'next/navigation'
+import { createClient } from '../../lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
 
-const uuidPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function rupiah(value: number) {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    maximumFractionDigits: 0
+  }).format(value)
+}
 
 function readAmount(value: FormDataEntryValue | null) {
-  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
-    return null
-  }
-
+  if (typeof value !== 'string' || !value.trim()) return null
   const amount = Number(value)
-
-  if (
-    !Number.isSafeInteger(amount) ||
-    amount < 0 ||
-    amount > 1000000000
-  ) {
-    return null
-  }
-
+  if (!Number.isSafeInteger(amount) || amount < 0 ||
+      amount > 1000000000) return null
   return amount
 }
 
-// ====================================
-// SIMPAN PERUBAHAN PRODUK
-// ====================================
-
-async function updateProduct(formData: FormData) {
+async function saveProduct(formData: FormData) {
   'use server'
 
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
 
-  const {
-    data: { user },
-    error: authError
-  } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
 
-  if (authError || !user) {
-    redirect('/login')
-  }
-
-  const id = String(formData.get('id') ?? '')
-
-  if (!uuidPattern.test(id)) {
-    redirect('/products?status=invalid')
-  }
-
+  const workspaceId = String(formData.get('workspace_id') ?? '')
   const name = String(formData.get('name') ?? '').trim()
   const category = String(formData.get('category') ?? '').trim()
-
   const sellingPrice = readAmount(formData.get('selling_price'))
   const productionCost = readAmount(formData.get('production_cost'))
   const marketplaceFee = readAmount(formData.get('marketplace_fee'))
 
   if (
-    name.length < 1 ||
-    name.length > 150 ||
+    !/^[0-9a-f-]{36}$/i.test(workspaceId) ||
+    !name || name.length > 150 ||
     category.length > 100 ||
     sellingPrice === null ||
     productionCost === null ||
     marketplaceFee === null
   ) {
-    redirect(`/products/${id}/edit?status=invalid`)
+    redirect('/products?status=invalid')
   }
 
-  // Produk hanya dapat diakses sesuai RLS Supabase.
-  const { data: product, error: findError } = await supabase
-    .from('products')
-    .select('id, workspace_id')
-    .eq('id', id)
+  // Pastikan workspace dapat diakses oleh akun login.
+  const { data: workspace, error: workspaceError } = await supabase
+    .from('workspaces')
+    .select('id')
+    .eq('id', workspaceId)
     .maybeSingle()
 
-  if (findError || !product) {
+  if (workspaceError || !workspace) {
     redirect('/products?status=denied')
   }
 
-  const { data: updated, error } = await supabase
+  // Kebijakan RLS products tetap memeriksa hak akses.
+  const { error } = await supabase
     .from('products')
-    .update({
+    .insert({
+      workspace_id: workspaceId,
       name,
       category: category || null,
       selling_price: sellingPrice,
       production_cost: productionCost,
-      marketplace_fee: marketplaceFee,
-      updated_at: new Date().toISOString()
+      marketplace_fee: marketplaceFee
     })
-    .eq('id', id)
-    .eq('workspace_id', product.workspace_id)
-    .select('id')
-    .maybeSingle()
 
-  if (error || !updated) {
-    redirect(`/products/${id}/edit?status=failed`)
-  }
+  if (error) redirect('/products?status=failed')
 
-  redirect('/products?status=updated')
+  redirect('/products?status=saved')
 }
 
-// ====================================
-// HAPUS PRODUK DENGAN CHECKBOX
-// ====================================
-
-async function deleteProduct(formData: FormData) {
-  'use server'
-
-  const supabase = await createClient()
-
-  const {
-    data: { user },
-    error: authError
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
-    redirect('/login')
-  }
-
-  const id = String(formData.get('id') ?? '')
-
-  if (!uuidPattern.test(id)) {
-    redirect('/products?status=invalid')
-  }
-
-  // Checkbox wajib dicentang.
-  // Validasi dilakukan kembali di server.
-  const confirmed = formData.get('confirm_delete')
-
-  if (confirmed !== 'on') {
-    redirect(`/products/${id}/edit?status=confirm`)
-  }
-
-  // Hapus hanya jika produk dapat diakses
-  // berdasarkan kebijakan RLS Supabase.
-  const { data: deleted, error } = await supabase
-    .from('products')
-    .delete()
-    .eq('id', id)
-    .select('id')
-    .maybeSingle()
-
-  if (error || !deleted) {
-    redirect(`/products/${id}/edit?status=failed`)
-  }
-
-  redirect('/products?status=deleted')
-}
-
-// ====================================
-// HALAMAN EDIT DAN HAPUS PRODUK
-// ====================================
-
-export default async function EditProductPage({
-  params,
+export default async function ProductsPage({
   searchParams
 }: {
-  params: Promise<{ id: string }>
   searchParams: Promise<{ status?: string }>
 }) {
-  const { id } = await params
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (!user) redirect('/login')
+
   const { status } = await searchParams
 
-  const supabase = await createClient()
+  const { data: workspaces, error: workspaceError } = await supabase
+    .from('workspaces')
+    .select('id, name')
+    .order('created_at', { ascending: false })
 
-  const {
-    data: { user },
-    error: authError
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
-    redirect('/login')
-  }
-
-  if (!uuidPattern.test(id)) {
-    notFound()
-  }
-
-  const { data: product, error } = await supabase
+  const { data: products, error: productError } = await supabase
     .from('products')
-    .select(
-      'id, name, category, selling_price, production_cost, marketplace_fee'
-    )
-    .eq('id', id)
-    .maybeSingle()
+    .select('id, workspace_id, name, category, selling_price, production_cost, marketplace_fee')
+    .order('created_at', { ascending: false })
+    .limit(50)
 
-  if (error || !product) {
-    notFound()
+  const box = {
+    background: '#112b40',
+    borderRadius: 14,
+    padding: 24,
+    marginBottom: 20
   }
 
-  const inputStyle = {
+  const input = {
     display: 'block' as const,
     width: '100%',
     padding: 12,
     marginTop: 7,
     background: '#081b2a',
-    color: '#ffffff',
     border: '1px solid #36536b',
     borderRadius: 8,
+    color: 'white',
     boxSizing: 'border-box' as const
   }
 
-  const fields = [
-    {
-      key: 'selling_price',
-      label: 'Harga Jual',
-      value: product.selling_price
-    },
-    {
-      key: 'production_cost',
-      label: 'HPP Produksi',
-      value: product.production_cost
-    },
-    {
-      key: 'marketplace_fee',
-      label: 'Biaya Marketplace',
-      value: product.marketplace_fee
-    }
-  ]
-
   return (
-    <main
-      style={{
-        minHeight: '100vh',
-        background: '#081b2a',
-        padding: '32px 18px',
-        color: '#ffffff'
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 650,
-          margin: 'auto',
-          background: '#112b40',
-          padding: 28,
-          borderRadius: 16
-        }}
-      >
-        <Link
-          href="/products"
-          style={{
-            color: '#54e3ac',
-            textDecoration: 'none'
-          }}
-        >
-          ← Kembali ke Database Produk
+    <main style={{
+      minHeight: '100vh',
+      background: '#081b2a',
+      color: 'white',
+      padding: '32px 18px'
+    }}>
+      <div style={{ maxWidth: 950, margin: 'auto' }}>
+        <Link href="/dashboard" style={{ color: '#54e3ac' }}>
+          ← Kembali ke Dashboard
         </Link>
 
-        <h1 style={{ marginTop: 26 }}>
-          Edit Produk Cetakprofit
-        </h1>
+        <h1>Database Produk Cetakprofit</h1>
+        <p>Simpan harga jual, HPP, dan biaya marketplace per workspace.</p>
 
-        <p style={{ color: '#b8d5e8' }}>
-          Perbarui informasi produk dan biaya produksi.
-        </p>
+        {status === 'saved' && (
+          <p style={{ color: '#54e3ac' }}>Produk berhasil disimpan!</p>
+        )}
+{status === 'updated' && (
+  <p style={{ color: '#54e3ac' }}>Produk berhasil diperbarui!</p>
+)}
 
-        {status && (
-          <p
-            role="alert"
-            style={{
-              color: '#ffb4b4',
-              padding: 12,
-              background: '#40252d',
-              borderRadius: 8
-            }}
-          >
-            {status === 'invalid'
-              ? 'Periksa kembali data produk.'
-              : status === 'confirm'
-              ? 'Centang persetujuan sebelum menghapus produk.'
-              : 'Operasi gagal. Periksa hak akses dan coba lagi.'}
-          </p>
+{status === 'deleted' && (
+  <p style={{ color: '#54e3ac' }}>Produk berhasil dihapus!</p>
+)}
+
+        {status === 'invalid' && (
+          <p role="alert">Periksa kembali semua data produk.</p>
+        )}
+        {status === 'denied' && (
+          <p role="alert">Workspace tidak dapat diakses.</p>
+        )}
+        {status === 'failed' && (
+          <p role="alert">Gagal menyimpan produk. Periksa izin database.</p>
         )}
 
-        {/* FORM EDIT PRODUK */}
+        <section style={box}>
+          <h2>Tambah Produk Baru</h2>
 
-        <form
-          action={updateProduct}
-          style={{
-            display: 'grid',
-            gap: 16,
-            marginTop: 24
-          }}
-        >
-          <input
-            type="hidden"
-            name="id"
-            value={product.id}
-          />
+          {workspaceError && (
+            <p role="alert">Gagal membaca workspace.</p>
+          )}
 
-          <label>
-            Nama Produk
-            <input
-              name="name"
-              defaultValue={product.name}
-              required
-              maxLength={150}
-              style={inputStyle}
-            />
-          </label>
+          {!workspaceError && !workspaces?.length ? (
+            <p>
+              Belum ada workspace.{' '}
+              <Link href="/dashboard" style={{ color: '#54e3ac' }}>
+                Buat workspace dahulu
+              </Link>
+            </p>
+          ) : (
+            <form action={saveProduct} style={{
+              display: 'grid',
+              gap: 16
+            }}>
+              <label>
+                Workspace
+                <select name="workspace_id" required style={input}>
+                  {workspaces?.map(w => (
+                    <option key={w.id} value={w.id}>{w.name}</option>
+                  ))}
+                </select>
+              </label>
 
-          <label>
-            Kategori
-            <input
-              name="category"
-              defaultValue={product.category ?? ''}
-              maxLength={100}
-              style={inputStyle}
-            />
-          </label>
+              <label>
+                Nama Produk
+                <input name="name" required maxLength={150}
+                  placeholder="Stiker Vinyl A3+ (1 lembar)"
+                  style={input}/>
+              </label>
 
-          {fields.map(field => (
-            <label key={field.key}>
-              {field.label} (Rp)
-              <input
-                name={field.key}
-                type="number"
-                min="0"
-                max="1000000000"
-                step="1"
-                required
-                defaultValue={Number(field.value)}
-                style={inputStyle}
-              />
-            </label>
-          ))}
+              <label>
+                Kategori
+                <input name="category" maxLength={100}
+                  defaultValue="Label & Stiker" style={input}/>
+              </label>
 
-          <button
-            type="submit"
-            style={{
-              background: '#2581b8',
-              color: '#ffffff',
-              padding: 14,
-              border: 0,
-              borderRadius: 8,
-              cursor: 'pointer',
-              fontWeight: 600
-            }}
-          >
-            Simpan Perubahan Produk
-          </button>
-        </form>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                gap: 16
+              }}>
+                <label>
+                  Harga Jual (Rp)
+                  <input name="selling_price" type="number"
+                    min="0" max="1000000000" step="1" required
+                    defaultValue={16000} style={input}/>
+                </label>
 
-        {/* PEMBATAS */}
+                <label>
+                  HPP Produksi (Rp)
+                  <input name="production_cost" type="number"
+                    min="0" max="1000000000" step="1" required
+                    defaultValue={6650} style={input}/>
+                </label>
 
-        <hr
-          style={{
-            margin: '32px 0',
-            borderColor: '#36536b'
-          }}
-        />
+                <label>
+                  Biaya Marketplace (Rp)
+                  <input name="marketplace_fee" type="number"
+                    min="0" max="1000000000" step="1" required
+                    defaultValue={5509} style={input}/>
+                </label>
+              </div>
 
-        {/* FORM HAPUS PRODUK */}
-
-        <h2 style={{ color: '#ffffff' }}>
-          Hapus Produk
-        </h2>
-
-        <p
-          style={{
-            color: '#ffb4b4',
-            lineHeight: 1.6
-          }}
-        >
-          Produk yang dihapus tidak dapat dikembalikan.
-          Centang persetujuan sebelum menghapus produk.
-        </p>
-
-        <form
-          action={deleteProduct}
-          style={{
-            display: 'grid',
-            gap: 16,
-            marginTop: 20
-          }}
-        >
-          <input
-            type="hidden"
-            name="id"
-            value={product.id}
-          />
-
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              padding: 16,
-              background: '#0b2134',
-              border: '1px solid #36536b',
-              borderRadius: 10,
-              cursor: 'pointer',
-              color: '#ffffff'
-            }}
-          >
-            <input
-              type="checkbox"
-              name="confirm_delete"
-              value="on"
-              required
-              style={{
-                width: 20,
-                height: 20,
-                flexShrink: 0,
-                accentColor: '#54e3ac',
+              <button type="submit" style={{
+                background: '#2581b8',
+                color: 'white',
+                padding: 14,
+                borderRadius: 8,
+                border: 0,
                 cursor: 'pointer'
-              }}
-            />
+              }}>
+                Simpan Produk
+              </button>
+            </form>
+          )}
+        </section>
 
-            <span style={{ lineHeight: 1.5 }}>
-              Saya yakin ingin menghapus produk ini
-              secara permanen.
-            </span>
-          </label>
+        <section style={box}>
+          <h2>Daftar Produk Tersimpan</h2>
 
-          <button
-            type="submit"
-            style={{
-              padding: 14,
-              border: 0,
-              borderRadius: 8,
-              background: '#a33535',
-              color: '#ffffff',
-              fontWeight: 600,
-              cursor: 'pointer'
-            }}
-          >
-            Hapus Produk Permanen
-          </button>
-        </form>
+          {productError && (
+            <p role="alert">Gagal membaca produk dari database.</p>
+          )}
+
+          {!productError && products?.length === 0 && (
+            <p>Belum ada produk yang disimpan.</p>
+          )}
+
+          {products?.map(p => {
+            const harga = Number(p.selling_price)
+            const hpp = Number(p.production_cost)
+            const biaya = Number(p.marketplace_fee)
+            const profit = harga - hpp - biaya
+            const margin = harga > 0 ? profit / harga * 100 : 0
+            const workspace = workspaces?.find(w => w.id === p.workspace_id)
+
+            return (
+              <article key={p.id} style={{
+                padding: 18,
+                background: '#081b2a',
+                border: '1px solid #36536b',
+                borderRadius: 10,
+                marginBottom: 12
+              }}>
+                <strong>{p.name}</strong>
+                <p style={{ color: '#a7c8dc' }}>
+                  {workspace?.name ?? 'Workspace'} · {p.category}
+                </p>
+                <p>Harga jual: {rupiah(harga)}</p>
+                <p>HPP: {rupiah(hpp)} · Marketplace: {rupiah(biaya)}</p>
+                <h3 style={{
+                  color: profit >= 0 ? '#54e3ac' : '#ff9696'
+                }}>
+                  Profit: {rupiah(profit)} ({margin.toFixed(1)}%)
+                </h3>
+<Link
+  href={`/products/${p.id}/edit`}
+  style={{
+    display: 'inline-block',
+    marginTop: 12,
+    padding: '10px 16px',
+    background: '#174c66',
+    color: '#54e3ac',
+    borderRadius: 8,
+    textDecoration: 'none'
+  }}
+>
+  Edit / Hapus Produk
+</Link>
+
+              </article>
+            )
+          })}
+        </section>
       </div>
     </main>
   )
