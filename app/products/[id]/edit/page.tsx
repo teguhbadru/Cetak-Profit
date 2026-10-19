@@ -8,18 +8,28 @@ export const dynamic = 'force-dynamic'
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function amount(value: FormDataEntryValue | null) {
-  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null
+function readAmount(value: FormDataEntryValue | null) {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+    return null
+  }
+
   const number = Number(value)
-  if (!Number.isSafeInteger(number) || number > 1000000000) return null
+
+  if (!Number.isSafeInteger(number) ||
+      number < 0 || number > 1000000000) {
+    return null
+  }
+
   return number
 }
 
+// SIMPAN PERUBAHAN PRODUK
 async function updateProduct(formData: FormData) {
   'use server'
 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+
   if (!user) redirect('/login')
 
   const id = String(formData.get('id') ?? '')
@@ -27,27 +37,15 @@ async function updateProduct(formData: FormData) {
 
   const name = String(formData.get('name') ?? '').trim()
   const category = String(formData.get('category') ?? '').trim()
-  const sellingPrice = amount(formData.get('selling_price'))
-  const productionCost = amount(formData.get('production_cost'))
-  const marketplaceFee = amount(formData.get('marketplace_fee'))
+  const sellingPrice = readAmount(formData.get('selling_price'))
+  const productionCost = readAmount(formData.get('production_cost'))
+  const marketplaceFee = readAmount(formData.get('marketplace_fee'))
 
-  if (
-    name.length < 1 || name.length > 150 ||
-    category.length > 100 ||
-    sellingPrice === null ||
-    productionCost === null ||
-    marketplaceFee === null
-  ) {
+  if (!name || name.length > 150 || category.length > 100 ||
+      sellingPrice === null || productionCost === null ||
+      marketplaceFee === null) {
     redirect(`/products/${id}/edit?status=invalid`)
   }
-
-  const { data: product } = await supabase
-    .from('products')
-    .select('id, workspace_id')
-    .eq('id', id)
-    .maybeSingle()
-
-  if (!product) redirect('/products?status=denied')
 
   const { data: updated, error } = await supabase
     .from('products')
@@ -60,7 +58,6 @@ async function updateProduct(formData: FormData) {
       updated_at: new Date().toISOString()
     })
     .eq('id', id)
-    .eq('workspace_id', product.workspace_id)
     .select('id')
     .maybeSingle()
 
@@ -71,17 +68,20 @@ async function updateProduct(formData: FormData) {
   redirect('/products?status=updated')
 }
 
+// HAPUS PRODUK MENGGUNAKAN CHECKBOX
 async function deleteProduct(formData: FormData) {
   'use server'
 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+
   if (!user) redirect('/login')
 
   const id = String(formData.get('id') ?? '')
   if (!uuidPattern.test(id)) redirect('/products?status=invalid')
 
-  if (formData.get('confirmation') !== 'HAPUS') {
+  // Validasi persetujuan pada server
+  if (formData.get('confirm_delete') !== 'on') {
     redirect(`/products/${id}/edit?status=confirm`)
   }
 
@@ -99,6 +99,7 @@ async function deleteProduct(formData: FormData) {
   redirect('/products?status=deleted')
 }
 
+// HALAMAN EDIT DAN HAPUS
 export default async function EditProductPage({
   params,
   searchParams
@@ -111,28 +112,28 @@ export default async function EditProductPage({
 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/login')
 
+  if (!user) redirect('/login')
   if (!uuidPattern.test(id)) notFound()
 
-  const { data: product } = await supabase
+  const { data: product, error } = await supabase
     .from('products')
     .select('id, name, category, selling_price, production_cost, marketplace_fee')
     .eq('id', id)
     .maybeSingle()
 
-  if (!product) notFound()
+  if (error || !product) notFound()
 
   const inputStyle = {
     display: 'block' as const,
     width: '100%',
+    boxSizing: 'border-box' as const,
     padding: 12,
-    marginTop: 7,
-    background: '#081b2a',
-    color: 'white',
-    border: '1px solid #36536b',
+    marginTop: 8,
     borderRadius: 8,
-    boxSizing: 'border-box' as const
+    border: '1px solid #36536b',
+    background: '#081b2a',
+    color: 'white'
   }
 
   const fields = [
@@ -145,10 +146,10 @@ export default async function EditProductPage({
     <main style={{
       minHeight: '100vh',
       background: '#081b2a',
-      padding: '32px 18px',
-      color: 'white'
+      color: 'white',
+      padding: '32px 18px'
     }}>
-      <div style={{
+      <section style={{
         maxWidth: 650,
         margin: 'auto',
         background: '#112b40',
@@ -160,20 +161,29 @@ export default async function EditProductPage({
         </Link>
 
         <h1>Edit Produk Cetakprofit</h1>
+        <p style={{ color: '#b8d5e8' }}>
+          Perbarui informasi produk dan biaya marketplace.
+        </p>
 
         {status && (
-          <p role="alert" style={{ color: '#ffb4b4' }}>
+          <p role="alert" style={{
+            color: '#ffb4b4',
+            background: '#40252d',
+            padding: 12,
+            borderRadius: 8
+          }}>
             {status === 'invalid'
-              ? 'Periksa data produk.'
+              ? 'Periksa kembali data produk.'
               : status === 'confirm'
-              ? 'Ketik HAPUS untuk mengonfirmasi.'
-              : 'Operasi gagal. Periksa hak akses dan coba lagi.'}
+              ? 'Centang persetujuan sebelum menghapus.'
+              : 'Operasi gagal. Periksa akses dan coba lagi.'}
           </p>
         )}
 
         <form action={updateProduct} style={{
           display: 'grid',
-          gap: 16
+          gap: 16,
+          marginTop: 24
         }}>
           <input type="hidden" name="id" value={product.id}/>
 
@@ -181,9 +191,9 @@ export default async function EditProductPage({
             Nama Produk
             <input
               name="name"
-              defaultValue={product.name}
               required
               maxLength={150}
+              defaultValue={product.name}
               style={inputStyle}
             />
           </label>
@@ -192,8 +202,8 @@ export default async function EditProductPage({
             Kategori
             <input
               name="category"
-              defaultValue={product.category ?? ''}
               maxLength={100}
+              defaultValue={product.category ?? ''}
               style={inputStyle}
             />
           </label>
@@ -220,46 +230,72 @@ export default async function EditProductPage({
             padding: 14,
             border: 0,
             borderRadius: 8,
+            fontWeight: 600,
             cursor: 'pointer'
           }}>
             Simpan Perubahan
           </button>
         </form>
 
-        <hr style={{ margin: '32px 0', borderColor: '#36536b' }}/>
+        <hr style={{
+          margin: '32px 0',
+          borderColor: '#36536b'
+        }}/>
 
         <h2>Hapus Produk</h2>
-        <p style={{ color: '#ffc5c5' }}>
-          Tindakan ini menghapus produk dari database.
-          Ketik HAPUS untuk mengonfirmasi.
+        <p style={{ color: '#ffb4b4' }}>
+          Produk yang dihapus tidak dapat dikembalikan.
+          Centang persetujuan untuk melanjutkan.
         </p>
 
         <form action={deleteProduct} style={{
           display: 'grid',
-          gap: 14
+          gap: 16,
+          marginTop: 18
         }}>
           <input type="hidden" name="id" value={product.id}/>
-          <input
-            name="confirmation"
-            placeholder="Ketik HAPUS"
-            pattern="HAPUS"
-            required
-            autoComplete="off"
-            style={inputStyle}
-          />
+
+          <label style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: 16,
+            border: '1px solid #36536b',
+            background: '#081b2a',
+            borderRadius: 10,
+            cursor: 'pointer'
+          }}>
+            <input
+              type="checkbox"
+              name="confirm_delete"
+              value="on"
+              required
+              style={{
+                width: 20,
+                height: 20,
+                flexShrink: 0,
+                accentColor: '#54e3ac'
+              }}
+            />
+            <span>
+              Saya yakin ingin menghapus produk ini
+              secara permanen.
+            </span>
+          </label>
 
           <button type="submit" style={{
+            background: '#a33535',
+            color: 'white',
             padding: 14,
             border: 0,
             borderRadius: 8,
-            background: '#a33535',
-            color: 'white',
+            fontWeight: 600,
             cursor: 'pointer'
           }}>
             Hapus Produk Permanen
           </button>
         </form>
-      </div>
+      </section>
     </main>
   )
 }
