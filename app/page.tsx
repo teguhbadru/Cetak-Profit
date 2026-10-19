@@ -1,3 +1,4 @@
+
 'use client'
 
 import Link from 'next/link'
@@ -40,10 +41,23 @@ export default function Home() {
   const [finishing, setFinishing] = useState(500)
   const [packing, setPacking] = useState(350)
   const [qty, setQty] = useState(1)
-  const [admin, setAdmin] = useState(10)
-  const [program, setProgram] = useState(5)
+  // Setelan Biaya Default: nilai awal simulasi, bukan tarif resmi marketplace.
+  const [storeType, setStoreType] = useState('Non Star')
+  const [marketCategory, setMarketCategory] = useState('Lainnya')
+  const [admin, setAdmin] = useState(9)
+  const [shipping, setShipping] = useState(4.5)
+  const [promo, setPromo] = useState(4.5)
+  const [affiliate, setAffiliate] = useState(5)
+  const [taxRate, setTaxRate] = useState(0.5)
   const [proses, setProses] = useState(1250)
-  const [diskon, setDiskon] = useState(0)
+  const [flashEnabled, setFlashEnabled] = useState(false)
+  const [flashPrice, setFlashPrice] = useState(14000)
+  const [voucherEnabled, setVoucherEnabled] = useState(false)
+  const [voucherAmount, setVoucherAmount] = useState(2500)
+  const [voucherMinimum, setVoucherMinimum] = useState(25000)
+  const [manualFeeEnabled, setManualFeeEnabled] = useState(false)
+  const [manualFeePerUnit, setManualFeePerUnit] = useState(5010)
+  // Iklan dan target margin dipertahankan dari kalkulator sebelumnya.
   const [iklan, setIklan] = useState(0)
   const [target, setTarget] = useState(20)
 
@@ -90,32 +104,59 @@ export default function Home() {
   }, [supabase])
 
   const hasil = useMemo(() => {
-    const unit = bahan + cetak + finishing + packing
     const jumlah = Math.max(1, Math.floor(qty))
+    const unit = bahan + cetak + finishing + packing
     const hpp = unit * jumlah
-    const subtotal = harga * jumlah
-    const pendapatan = Math.max(0, subtotal - diskon)
-    // Nilai contoh, bukan tarif resmi Shopee.
-    const fee = pendapatan * (admin + program) / 100 + proses
+    const invalidFlash = flashEnabled && (
+      !Number.isSafeInteger(flashPrice) || flashPrice > harga || flashPrice < 0
+    )
+    // Harga aktual setelah Flash Sale, digunakan untuk menghitung dan menyimpan produk.
+    const activePrice = flashEnabled ? flashPrice : harga
+    const normalSubtotal = harga * jumlah
+    const subtotal = activePrice * jumlah
+    const voucherEligible = voucherEnabled && subtotal >= voucherMinimum
+    const voucherApplied = voucherEligible ? Math.min(voucherAmount, subtotal) : 0
+    const pendapatan = Math.max(0, subtotal - voucherApplied)
+
+    // Simulasi: semua persentase dikenakan ke subtotal setelah Flash Sale,
+    // namun sebelum voucher. Ketentuan dan dasar biaya aktual bisa berbeda.
+    const percentTotal = admin + shipping + promo + affiliate + taxRate
+    const automaticFee = subtotal * percentTotal / 100 + proses
+    // Override opsional: total biaya marketplace + voucher (per unit).
+    const combinedNonProd = manualFeeEnabled
+      ? manualFeePerUnit * jumlah
+      : automaticFee + voucherApplied
+    const fee = combinedNonProd - voucherApplied
     const adCost = pendapatan * iklan / 100
-    const profit = pendapatan - hpp - fee - adCost
+    const profit = subtotal - hpp - combinedNonProd - adCost
     const margin = pendapatan > 0 ? profit / pendapatan * 100 : 0
-    const variableRate = (admin + program + iklan) / 100
-    const targetRate = target / 100
-    const minimal = 1 - variableRate - targetRate
-    const rekomendasi = minimal > 0
-      ? (hpp + proses + diskon * (1 - variableRate)) / (minimal * jumlah)
-      : null
     const beAcos = pendapatan > 0
       ? Math.max(0, (pendapatan - hpp - fee) / pendapatan * 100)
       : 0
-    return { unit, jumlah, hpp, subtotal, pendapatan, fee, adCost, profit, margin, rekomendasi, beAcos }
-  }, [harga, bahan, cetak, finishing, packing, qty, admin, program, proses, diskon, iklan, target])
 
-  // Tabel products sekarang hanya punya satu kolom biaya non-produksi.
-  // Alokasikan fee, iklan, dan diskon seller per unit agar profit katalog
-  // mendekati profit simulasi (perbedaan pembulatan maks. ~Rp0,5 per unit).
-  const allocatedFee = Math.round((hasil.fee + hasil.adCost + diskon) / hasil.jumlah)
+    // Perkiraan harga jual efektif per unit untuk target margin.
+    // Voucher diasumsikan tetap berlaku pada jumlah saat ini.
+    const denominator = 1 - (percentTotal + iklan + target) / 100
+    const voucherAdjustment = voucherApplied * (1 - (iklan + target) / 100)
+    const rekomendasi = !manualFeeEnabled && denominator > 0
+      ? Math.max(0, (hpp + proses + voucherAdjustment) / (denominator * jumlah))
+      : null
+
+    return {
+      jumlah, unit, hpp, normalSubtotal, subtotal, activePrice, invalidFlash,
+      percentTotal, voucherEligible, voucherApplied, pendapatan, fee, combinedNonProd, adCost,
+      profit, margin, rekomendasi, beAcos
+    }
+  }, [harga, bahan, cetak, finishing, packing, qty, admin, shipping, promo,
+    affiliate, taxRate, proses, flashEnabled, flashPrice, voucherEnabled,
+    voucherAmount, voucherMinimum, manualFeeEnabled, manualFeePerUnit, iklan, target])
+
+  // products menyimpan biaya PER UNIT dalam satu kolom marketplace_fee.
+  // Termasuk biaya marketplace, iklan, dan voucher yang ditanggung seller.
+  // Jumlah per unit dibulatkan, sehingga bisa berbeda sedikit dari simulasi/order.
+  const allocatedFee = Math.round(
+    (hasil.combinedNonProd + hasil.adCost) / hasil.jumlah
+  )
 
   async function saveToDatabase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -125,13 +166,23 @@ export default function Home() {
 
     const name = productName.trim()
     const categoryName = category.trim()
-    const amounts = [harga, bahan, cetak, finishing, packing, proses, diskon]
-    const percentages = [admin, program, iklan, target]
+    const amounts = [harga, bahan, cetak, finishing, packing, proses]
+    const manualValid = !manualFeeEnabled || (Number.isSafeInteger(manualFeePerUnit) && manualFeePerUnit >= 0 && manualFeePerUnit <= 1000000000)
+    const promoAmounts = (
+      (!flashEnabled || (Number.isSafeInteger(flashPrice) && flashPrice <= harga && flashPrice >= 0 && flashPrice <= 1000000000)) &&
+      (!voucherEnabled || (
+        Number.isSafeInteger(voucherAmount) && voucherAmount >= 0 && voucherAmount <= 1000000000 &&
+        Number.isSafeInteger(voucherMinimum) && voucherMinimum >= 0 && voucherMinimum <= 1000000000
+      ))
+    )
+    const percentages = [admin, shipping, promo, affiliate, taxRate, iklan, target]
     const valid = name.length >= 2 && name.length <= 150 &&
       categoryName.length <= 100 && workspaces.some(w => w.id === workspaceId) &&
       Number.isSafeInteger(qty) && qty >= 1 && qty <= 10000 &&
       amounts.every(n => Number.isSafeInteger(n) && n >= 0 && n <= 1000000000) &&
+      promoAmounts && manualValid && !hasil.invalidFlash &&
       percentages.every(n => Number.isFinite(n) && n >= 0 && n <= 100) &&
+      Number.isSafeInteger(hasil.activePrice) && hasil.activePrice <= 1000000000 &&
       Number.isSafeInteger(hasil.unit) && hasil.unit <= 1000000000 &&
       Number.isSafeInteger(allocatedFee) && allocatedFee >= 0 && allocatedFee <= 1000000000
 
@@ -154,7 +205,7 @@ export default function Home() {
         workspace_id: workspaceId,
         name,
         category: categoryName || null,
-        selling_price: harga,
+        selling_price: hasil.activePrice,
         production_cost: hasil.unit,
         marketplace_fee: allocatedFee
       })
@@ -171,6 +222,15 @@ export default function Home() {
       setSaving(false)
     }
   }
+
+  const toggleStyle = {
+    display: 'flex', alignItems: 'center', gap: 10, fontWeight: 700,
+    cursor: 'pointer'
+  } as const
+  const promoBoxStyle = {
+    display: 'grid', gap: 12, background: '#071a29',
+    padding: 14, borderRadius: 11, border: '1px solid #2c495d'
+  } as const
 
   const selectStyle = {
     width: '100%', padding: 12, borderRadius: 9, background: '#071a29',
@@ -198,10 +258,10 @@ export default function Home() {
             <h1>Hitung Profit Percetakan</h1>
             <p className="muted">Simulasikan HPP dan biaya marketplace sebelum menentukan harga jual.</p>
           </div>
-          <span className="version">BETA v0.2</span>
+          <span className="version">BETA v0.5</span>
         </header>
         <div className="notice">
-          <strong>Tarif di bawah hanya simulasi.</strong> Angka administrasi, program, dan biaya proses bukan tarif resmi Shopee. Sesuaikan dengan biaya aktual toko Anda.
+          <strong>Simulasi biaya marketplace.</strong> Setelan tipe toko, kategori, dan persentase di bawah adalah nilai awal, bukan tarif resmi Shopee. Periksa ketentuan akun serta program yang benar-benar diikuti.
         </div>
         <div className="content-grid">
           <div className="forms">
@@ -217,12 +277,94 @@ export default function Home() {
               </div>
             </section>
             <section className="panel">
-              <div className="panel-head"><span className="step">02</span><h2>Potongan Marketplace</h2></div>
+              <div className="panel-head"><span className="step">02</span><h2>Setelan Biaya Default</h2></div>
+              <p className="muted" style={{ fontSize: 13, marginTop: 0, marginBottom: 18 }}>
+                Menggantikan Potongan Marketplace lama. Tarif bisa diedit; pilihan tipe toko dan kategori belum mengubah persentase otomatis.
+              </p>
               <div className="fields">
-                <Field label="Biaya admin" value={admin} onChange={setAdmin} suffix="%" />
-                <Field label="Program tambahan" value={program} onChange={setProgram} suffix="%" />
-                <Field label="Biaya proses per order" value={proses} onChange={setProses} />
-                <Field label="Diskon seller per order" value={diskon} onChange={setDiskon} />
+                <label className="field">
+                  <span>Tipe Toko</span>
+                  <select value={storeType} onChange={e => setStoreType(e.target.value)} style={selectStyle}>
+                    <option>Non Star</option>
+                    <option>Star / Star Plus</option>
+                    <option>Shopee Mall</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Kategori Shopee</span>
+                  <select value={marketCategory} onChange={e => setMarketCategory(e.target.value)} style={selectStyle}>
+                    {[
+                      'Lainnya', 'Label & Stiker', 'Buku & Alat Tulis',
+                      'Percetakan & Grafika', 'Kemasan & Packaging',
+                      'Poster & Dekorasi', 'Ibu & Bayi', 'Makanan & Minuman',
+                      'Perlengkapan Rumah', 'Fashion', 'Kesehatan & Kecantikan',
+                      'Elektronik', 'Hobi & Koleksi'
+                    ].map(item => <option key={item}>{item}</option>)}
+                  </select>
+                </label>
+                <Field label="Biaya Admin" value={admin} onChange={setAdmin} suffix="%" />
+                <Field label="Gratis Ongkir XTRA" value={shipping} onChange={setShipping} suffix="%" />
+                <Field label="Promo XTRA" value={promo} onChange={setPromo} suffix="%" />
+                <Field label="Komisi Affiliate (AMS)" value={affiliate} onChange={setAffiliate} suffix="%" />
+                <label className="field">
+                  <span>PPh Pasal 22</span>
+                  <select value={taxRate} onChange={e => setTaxRate(Number(e.target.value))} style={selectStyle}>
+                    <option value={0.5}>Dipotong 0,5%</option>
+                    <option value={0}>Tidak dipotong (0%)</option>
+                  </select>
+                </label>
+                <Field label="Biaya per Pesanan" value={proses} onChange={setProses} />
+              </div>
+              <h3 style={{ marginTop: 22, marginBottom: 12, fontSize: 15 }}>Flash Sale &amp; Voucher Toko</h3>
+              <div style={{ display: 'grid', gap: 12 }}>
+                <div style={promoBoxStyle}>
+                  <label style={toggleStyle}>
+                    <input type="checkbox" checked={flashEnabled} onChange={e => setFlashEnabled(e.target.checked)} />
+                    Aktifkan Flash Sale
+                  </label>
+                  <Field label="Harga Flash Sale per unit" value={flashPrice} onChange={setFlashPrice} />
+                  <small className="muted" style={{ fontSize: 12 }}>
+                    Harga aktif: {rupiah(hasil.activePrice)} / unit. Flash Sale menggantikan harga normal saat menghitung profit.
+                  </small>
+                  {hasil.invalidFlash && (
+                    <span role="alert" style={{ color: '#ffb4b4', fontSize: 12 }}>
+                      Harga Flash Sale tidak boleh lebih besar dari harga normal.
+                    </span>
+                  )}
+                </div>
+                <div style={promoBoxStyle}>
+                  <label style={toggleStyle}>
+                    <input type="checkbox" checked={voucherEnabled} onChange={e => setVoucherEnabled(e.target.checked)} />
+                    Aktifkan Voucher Toko
+                  </label>
+                  <Field label="Nominal voucher per pesanan" value={voucherAmount} onChange={setVoucherAmount} />
+                  <Field label="Minimum belanja untuk voucher" value={voucherMinimum} onChange={setVoucherMinimum} />
+                  {voucherEnabled && !hasil.voucherEligible && (
+                    <small style={{ color: '#ffcb8b', fontSize: 12 }}>
+                      Voucher belum berlaku karena subtotal masih di bawah {rupiah(voucherMinimum)}.
+                    </small>
+                  )}
+                </div>
+              </div>
+              <div style={{ ...promoBoxStyle, marginTop: 12 }}>
+                <label style={toggleStyle}>
+                  <input type="checkbox" checked={manualFeeEnabled} onChange={e => {
+                    setManualFeeEnabled(e.target.checked)
+                    if (e.target.checked) setManualFeePerUnit(Math.round(hasil.combinedNonProd / hasil.jumlah))
+                  }} />
+                  Ubah manual total biaya marketplace + voucher per unit
+                </label>
+                {manualFeeEnabled && (
+                  <Field label="Total biaya nonproduksi manual / unit" value={manualFeePerUnit} onChange={setManualFeePerUnit} />
+                )}
+                <small className="muted" style={{ fontSize: 12 }}>
+                  Override ini menggantikan potongan marketplace dan voucher dalam profit, tetapi biaya iklan tetap dihitung terpisah.
+                </small>
+              </div>
+              <div className="disclaimer" style={{ marginTop: 14 }}>
+                Total tarif persentase: <strong>{hasil.percentTotal.toLocaleString('id-ID')}%</strong>.
+                Flash Sale mengubah harga jual, voucher mengurangi pendapatan penjualan, dan biaya per pesanan dihitung satu kali tiap order.
+                Semua angka adalah estimasi, belum tersimpan sebagai preset permanen per workspace.
               </div>
             </section>
             <section className="panel">
@@ -236,23 +378,34 @@ export default function Home() {
           <div className="result-col">
             <section className="panel results">
               <p className="eyebrow">RINGKASAN HASIL / ORDER</p>
+              {hasil.invalidFlash && <p role="alert" style={{ color: '#ffb4b4' }}>
+                Perbaiki harga Flash Sale sebelum menyimpan produk.
+              </p>}
               <div className="profit-card">
                 <span>Estimasi profit bersih</span>
                 <strong className={hasil.profit >= 0 ? 'positive' : 'negative'}>{rupiah(hasil.profit)}</strong>
                 <small className={hasil.profit >= 0 ? 'positive' : 'negative'}>{hasil.margin.toFixed(1)}% margin dari pendapatan bersih</small>
               </div>
               <div className="breakdown">
-                <div><span>Subtotal penjualan</span><strong>{rupiah(hasil.subtotal)}</strong></div>
-                <div><span>Pendapatan setelah diskon</span><strong>{rupiah(hasil.pendapatan)}</strong></div>
+                {flashEnabled && <div><span>Subtotal harga normal</span><strong>{rupiah(hasil.normalSubtotal)}</strong></div>}
+                <div><span>Subtotal setelah Flash Sale</span><strong>{rupiah(hasil.subtotal)}</strong></div>
+                <div><span>Pendapatan setelah voucher (informasi)</span><strong>{rupiah(hasil.pendapatan)}</strong></div>
                 <div><span>HPP produksi</span><strong>− {rupiah(hasil.hpp)}</strong></div>
-                <div><span>Potongan marketplace</span><strong>− {rupiah(hasil.fee)}</strong></div>
+                {manualFeeEnabled ? (
+                  <div><span>Marketplace + voucher (manual)</span><strong>− {rupiah(hasil.combinedNonProd)}</strong></div>
+                ) : (
+                  <>
+                    {hasil.voucherApplied > 0 && <div><span>Voucher toko</span><strong>− {rupiah(hasil.voucherApplied)}</strong></div>}
+                    <div><span>Potongan marketplace (termasuk PPh 22)</span><strong>− {rupiah(hasil.fee)}</strong></div>
+                  </>
+                )}
                 <div><span>Estimasi biaya iklan</span><strong>− {rupiah(hasil.adCost)}</strong></div>
               </div>
               <div className="metrics">
                 <div><small>Break-even ACOS</small><strong>{hasil.beAcos.toFixed(1)}%</strong></div>
                 <div><small>Harga jual target / unit</small><strong>{hasil.rekomendasi === null ? 'Tidak tercapai' : rupiah(Math.ceil(hasil.rekomendasi))}</strong></div>
               </div>
-              <p className="disclaimer">Harga rekomendasi adalah pendekatan sederhana untuk struktur tarif persentase tanpa batas maksimum. Belum memperhitungkan pajak khusus atau ongkir seller.</p>
+              <p className="disclaimer">Harga target adalah perkiraan harga jual efektif per unit (tidak tersedia bila override manual aktif), dengan nominal voucher saat ini dianggap tetap. Dasar biaya dan pajak yang sebenarnya dapat berbeda; minimum voucher dan batas maksimal program belum dimodelkan penuh.</p>
             </section>
             <section className="panel" style={{ marginTop: 18 }}>
               <div className="panel-head"><span className="step">04</span><h2>Simpan Hasil ke Database</h2></div>
@@ -277,8 +430,8 @@ export default function Home() {
                     <div className="field-input"><input value={category} onChange={e => setCategory(e.target.value)} maxLength={100} /></div>
                   </label>
                   <div className="disclaimer" style={{ margin: 0 }}>
-                    Tersimpan per unit: harga {rupiah(harga)}, HPP {rupiah(hasil.unit)}, alokasi biaya nonproduksi {rupiah(allocatedFee)}.
-                    Alokasi terakhir mencakup potongan marketplace, iklan, dan diskon seller; disatukan sementara dalam kolom biaya marketplace produk. Angka dibulatkan per unit. Rincian simulasi belum tersimpan.
+                    Tersimpan per unit: harga efektif {rupiah(hasil.activePrice)}, HPP {rupiah(hasil.unit)}, alokasi biaya nonproduksi {rupiah(allocatedFee)}.
+                    Alokasi mencakup marketplace, iklan, dan voucher toko. Rincian promosi serta tipe toko belum tersimpan terpisah, dan angka dibulatkan per unit.
                   </div>
                   <button type="submit" disabled={saving} style={{ padding: 13, color: 'white', fontWeight: 700, border: 0, borderRadius: 9, background: saving ? '#466274' : '#2581b8', cursor: saving ? 'wait' : 'pointer' }}>
                     {saving ? 'Menyimpan...' : 'Simpan sebagai Produk Baru'}
@@ -290,7 +443,7 @@ export default function Home() {
             </section>
           </div>
         </div>
-        <footer>Cetakprofit © 2026 • Simulasi dengan tarif contoh • Penyimpanan memerlukan login seller.</footer>
+        <footer>Cetakprofit © 2026 • Tarif simulasi dapat disesuaikan • Penyimpanan produk memerlukan login seller.</footer>
       </section>
     </main>
   )
